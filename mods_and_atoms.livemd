@@ -1,0 +1,304 @@
+# Modules & Atoms!
+
+## Modules & Atoms
+
+Let's do a quick experiment. If I run the following code...
+
+```elixir
+my_variable
+```
+
+I get yelled at, because my_variable doesn't exist yet. Now let's try something else...
+
+```elixir
+MyModule
+```
+
+Nothing happened. Why didn't I get yelled at? I didn't define `MyModule` yet!
+
+```elixir
+A
+```
+
+```elixir
+A |> to_string
+```
+
+```elixir
+A |> is_atom
+```
+
+```elixir
+A == :"Elixir.A"
+```
+
+You will sometimes see chunks of code like
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+:timer.sleep(10_000)
+```
+
+This code is calling an Erlang module called `timer`.
+
+A piece of code like
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+IO.inspect(:ok)
+```
+
+is secretly doing the same thing; it's using an atom as a module name.
+
+```elixir
+IO.inspect(:ok)
+:"Elixir.IO".inspect(:okey_dokey)
+```
+
+So; now you know why you can write something like
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+User
+|> UserQueries.do_something()
+|> Repo.all()
+```
+
+or
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+opts = [strategy: :one_for_one, name: AccountingIntegrations.Supervisor]
+Supervisor.start_link(children, opts)
+```
+
+Even though `AccountingIntegrations.Supervisor` might not be a module.
+
+<!-- livebook:{"break_markdown":true} -->
+
+### Let's talk about structs!
+
+<!-- livebook:{"break_markdown":true} -->
+
+structs are, under the hood, special maps which are attached to modules and come with a fixed set of fields which can have defaults and non-nullability.
+
+```elixir
+defmodule Thingy do
+  @enforce_keys [:name, :age]
+  defstruct name: nil, age: nil
+end
+```
+
+```elixir
+%Thingy{}
+```
+
+Strict vs non-strict access.
+
+```elixir
+struct = %Thingy{name: "Nick", age: :ageless}
+nonstruct = %{name: "Cosmo", age: :dont_ask}
+```
+
+```elixir
+{
+  struct.name,
+  nonstruct.name
+}
+```
+
+```elixir
+nonstruct[:foo]
+```
+
+```elixir
+nonstruct[:name]
+```
+
+```elixir
+struct[:name]
+```
+
+Why the difference? The non-strict access pattern assumes you don't know if a field exists, but for a struct, you are assumed to know which fields exist and which don't in advance. If you have a struct, all your access should be strict and Elixir enforces this by crashing.
+
+Even still; A struct _is_ a map and you can pattern match it as one!
+
+```elixir
+is_map(struct)
+# See? It says so right there.
+```
+
+This is another reason to prefer the pattern of unpacking all of the things you need from a map using a pattern match!
+
+```elixir
+defmodule Ex1 do
+  def nonstrict_access(map = %{name: _name}) do
+    # Even though I demanded that :name exists, it still fails if it's a struct!
+    map[:name]
+  end
+
+  def destructured_access(%{name: name}) do
+    name
+  end
+end
+```
+
+```elixir
+Ex1.nonstrict_access(struct)
+```
+
+```elixir
+Ex1.destructured_access(struct)
+```
+
+Structs carry the name of the module they're attached to in a hidden field called `__struct__`, and Elixir uses this for polymorphism and "interfaces" (Protocols, stay tuned!)
+
+WARNING: This field is the _only_ thing Elixir uses to check if what you gave it was really a struct. This is a compile-time check and it can be spoofed around.
+
+```elixir
+defmodule Ex2 do
+  def strict_struct(%Thingy{}) do
+    IO.puts("I got a Thingy")
+  end
+
+  def strict_struct(_) do
+    IO.puts("I didn't get a Thingy.")
+  end
+end
+
+Ex2.strict_struct(%Thingy{name: "Nick", age: :ageless})
+Ex2.strict_struct(%{name: "Nick", age: :ageless})
+Ex2.strict_struct(%{__struct__: Thingy})
+```
+
+Here's a quick and extremely hacky example of how to use the module name in the struct! This is a bad but fun and cute way to do it. The right way is to use Protocols.
+
+```elixir
+defmodule FakeProtocol do
+  def print_me(struct = %{__struct__: mod}) do
+    apply(mod, :print_me, [struct])
+  end
+end
+
+defmodule PrintableStruct1 do
+  defstruct name: "Nick", age: :ageless
+
+  def print_me(%{name: name, age: age}) do
+    IO.puts("Hi! My name is #{name} and I am #{age}")
+  end
+end
+
+defmodule PrintableStruct2 do
+  defstruct name: "Cosmo", age: :dont_ask
+
+  def print_me(%{name: name}) do
+    IO.puts("My name is #{name} and my age is none of your business")
+  end
+end
+
+FakeProtocol.print_me(%PrintableStruct1{})
+FakeProtocol.print_me(%PrintableStruct2{})
+```
+
+the `apply` function uses what's called the [M, F, A] pattern, which you might see in a bunch of places. Functions that need to call another function or start a process will often take a module name (M), an function name in the form of an atom (F) and a list of arguments (A). So if you're looking through a codebase and you see something like
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+DoFoo.execute(ModuleThingy, :start, [])
+```
+
+you're probably seeing that!
+
+<!-- livebook:{"break_markdown":true} -->
+
+Module names are used as handles to access code loaded into the _global_ environment. We can change the code and the handles will point to the same thing. Let's run a quick experiment to see what happens (You should run this in IEx yourself, it might crash things!):
+
+```elixir
+defmodule MyMod do
+  def foo, do: :bar
+
+  def loop_a do
+    # Use the copy of foo/0 I've enclosed
+    foo() |> IO.inspect(label: "loop_a")
+    :timer.sleep(10_000)
+    # Use the copy of loop_a/0 I've enclosed
+    loop_a()
+  end
+
+  def loop_b do
+    # Use the copy of foo/0 in MyMod
+    MyMod.foo() |> IO.inspect(label: "loop_b")
+    :timer.sleep(10_000)
+    # Use the copy of loop/0 I've enclosed
+    loop_b()
+  end
+
+  def loop_c do
+    # Use the copy of foo/0 in MyMod
+    MyMod.foo() |> IO.inspect(label: "loop_c")
+    :timer.sleep(10_000)
+    # Use the copy of loop_c/0 in MyMod
+    MyMod.loop_c()
+  end
+
+  def loop_d do
+    # Use the copy of foo/0 in MyMod
+    apply(MyMod, :foo, []) |> IO.inspect(label: "loop_d")
+    :timer.sleep(10_000)
+    # Use the copy of loop_c/0 in MyMod
+    apply(MyMod, :loop_d, [])
+  end
+end
+```
+
+This will start these boys looping in their own processes, don't worry about this for now.
+
+```elixir
+{Task.async(&MyMod.loop_a/0), Task.async(&MyMod.loop_b/0), Task.async(&MyMod.loop_c/0),
+ Task.async(&MyMod.loop_d/0)}
+```
+
+```elixir
+defmodule MyMod do
+  def foo, do: :baz
+
+  def loop_a do
+    # Use the copy of foo/0 I've enclosed
+    foo() |> IO.inspect(label: "updated loop_a")
+    :timer.sleep(10_000)
+    # Use the copy of loop_a/0 I've enclosed
+    loop_a()
+  end
+
+  def loop_b do
+    # Use the copy of foo/0 in MyMod
+    MyMod.foo() |> IO.inspect(label: "updated loop_b")
+    :timer.sleep(10_000)
+    # Use the copy of loop/0 I've enclosed
+    loop_b()
+  end
+
+  def loop_c do
+    # Use the copy of foo/0 in MyMod
+    MyMod.foo() |> IO.inspect(label: "updated loop_c")
+    :timer.sleep(10_000)
+    # Use the copy of loop_c/0 in MyMod
+    MyMod.loop_c()
+  end
+
+  def loop_d do
+    # Use the copy of foo/0 in MyMod
+    apply(MyMod, :foo, []) |> IO.inspect(label: "updated loop_d")
+    :timer.sleep(10_000)
+    # Use the copy of loop_c/0 in MyMod
+    apply(MyMod, :loop_d, [])
+  end
+end
+```
+
+
